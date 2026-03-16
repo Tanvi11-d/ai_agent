@@ -2,12 +2,12 @@ from dotenv import load_dotenv
 import os
 import requests
 import logging
-from fastapi import HTTPException
-from pydantic_ai import Agent,RunContext,ModelRetry
+from pydantic_ai import Agent,RunContext
 from pydantic_ai.models.groq import GroqModel
 from pydantic_ai.providers.groq import GroqProvider
 from pydantic import BaseModel,Field
-import logfire
+from fastapi import HTTPException
+# import logfire
 
 load_dotenv()
 
@@ -15,14 +15,13 @@ load_dotenv()
 api_key=os.getenv("Groq_api_key")
 weather_api=os.getenv("weather_api")
 
-
 # logfire.configure()
 # logfire.instrument_pydantic_ai()
+
 
 logger=logging.basicConfig(level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s')
 log=logging.getLogger(logger)
-
 
 class Task(BaseModel):
     task:str
@@ -33,14 +32,18 @@ class Message(BaseModel):
     tasks:list[Task]=Field(default_factory=list)
     message:list[str]=Field(default_factory=list)
 
+    class Config:
+        from_attributes=True
+
 class Result(BaseModel):
     result:str
 
-memory=Message()
+# memory=Message()
+
 
 # llm model
 model=GroqModel(
-    "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
     provider=GroqProvider(api_key=api_key))
 
 prompt=f"""
@@ -60,12 +63,11 @@ prompt=f"""
     10.Do not give answer except notes,weather and task.
     11.if user asks showing both task and notes,then return final answer with tool name.
     12.If the user asks to complete or update a task,convert text number into numeric number.
-    13.if user asks to remove or delete notes then call remove_notes tool.
+    13.if user asks to remove or delete notes and tasks,convert text number into numeric number.
     """
-
 agent=Agent(
     model=model,
-    deps_type=Message,retries=60,
+    deps_type=Message,
     system_prompt=prompt
 )
 
@@ -85,11 +87,14 @@ def get_weathers(ctx:RunContext,query:str):
         log.error("Weather not fatched!!")
         return "Unable to fatched weather" 
 
-#Notes tool   
+ 
+
+#Create Notes  
 @agent.tool
 def save_note(ctx:RunContext[Message],query:str):
     """Save the all Notes"""    
     try:
+
         note_list=[t.strip() for t in query.split(",")] 
         ctx.deps.notes.extend(note_list)
         log.info("Notes add")
@@ -98,12 +103,13 @@ def save_note(ctx:RunContext[Message],query:str):
         log.error("Notes not saved!!")
         return "Notes not saved"
       
+# Show Notes      
 @agent.tool
 def show_notes(ctx:RunContext[Message]):
     """show the Notes"""
     try:
-        if not ctx.deps.notes:
-            return "Notes not found"
+        # if not ctx.deps.notes:
+        #     return "Notes not found"
         log.info("Notes show")
         return "\n".join(f"{i+1}.{n}" for i,n in enumerate(ctx.deps.notes))
     
@@ -111,21 +117,21 @@ def show_notes(ctx:RunContext[Message]):
         log.error("Notes not show")
         return "Notes not found"
     
-    
+# Delete Notes   
 @agent.tool
-def remove_notes(ctx:RunContext[Message],query:str):
-    """remove notes"""
+def remove_notes(ctx:RunContext[Message],index:int):
+    """remove notes by index"""
     try:
-        if not ctx.deps.notes:
-            return "Notes not found"
-        for t in ctx.deps.notes:
-            ctx.deps.notes.remove(t)
+        # if not ctx.deps.notes:
+        #     return "Notes not found"
+        ctx.deps.notes.pop(index-1)
+        log.info("Notes deleted")
         return "Notes deleted"
     except:
-        log.error("Notes not remove")
+        log.error("Notes not delete")
         return "Notes not deleted"
     
-# # Tasks tool
+# Create Tasks 
 @agent.tool
 def add_task(ctx:RunContext[Message],query:str):
     """add all task"""
@@ -139,13 +145,15 @@ def add_task(ctx:RunContext[Message],query:str):
         log.error("Task not added!!")
         return "Tasks not added"
 
+# Show Tasks
 @agent.tool
 def view_task(ctx:RunContext[Message]):
     """view all tasks"""
     try:
-        if not ctx.deps.tasks:
-            return "Tasks not found"
+        # if not ctx.deps.tasks:
+        #     return "Tasks not found"
         
+
         result=" "
         for i,t in enumerate(ctx.deps.tasks,start=1):
             result += f"{i}.{t.task} ({t.status})\n"
@@ -156,6 +164,7 @@ def view_task(ctx:RunContext[Message]):
         log.error("tasks not show")
         return "Tasks not found"
 
+# Update Tasks
 @agent.tool       
 def complete_task(ctx:RunContext[Message],index:int):
     """update the task complete"""
@@ -170,24 +179,28 @@ def complete_task(ctx:RunContext[Message],index:int):
         log.error("task not updated")
         return "Tasks not updated"
 
-# @agent.tool
-# def remove_task(ctx:RunContext[Message]):
-#     """remove tasks"""
-#     try:
-#         if not ctx.deps.tasks:
-#             return "Tasks not found"
-#     except:
-#         log.error("Tasks not remove")
-#         return "Tasks deleted"
-    
-# call agent
-def call_agent(query:str):
+# Delete Tasks
+@agent.tool
+def remove_task(ctx:RunContext[Message],index:int):
+    """remove tasks by index"""
     try:
-        memory.message.append(query)
-        response=agent.run_sync(query,deps=memory,output_type=Result)
-        print("all_message__",response.all_messages())
-        return response.output
-    except Exception as e:
-        logging.error("Sorry, I am facing an issue. Please try again.")
-        raise HTTPException(status_code=500,detail=str(e))
+        # if not ctx.deps.tasks:
+        #     return "Tasks not found"
+        log.info("Task deleted")
+        ctx.deps.tasks.pop(index-1)
+    except:
+        log.error("Tasks not deleted")
+        return "Tasks deleted"
+    
+# def call_agent(query:str):
+#     try:
+#         memory.message.append(query)
+#         response=agent.run_sync(query,deps=memory,output_type=Result)
+#         # response=agent.run_sync(query,deps=Message,output_type=Result)
+
+#         # print("all_message__",response.all_messages())
+#         return response.output
+#     except Exception as e:
+#         logging.error("Sorry, I am facing an issue. Please try again.")
+#         raise HTTPException(status_code=500,detail=str(e))
 
