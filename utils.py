@@ -6,7 +6,6 @@ from pydantic_ai import Agent,RunContext
 from pydantic_ai.models.groq import GroqModel
 from pydantic_ai.providers.groq import GroqProvider
 from pydantic import BaseModel,Field
-from fastapi import HTTPException
 # import logfire
 
 load_dotenv()
@@ -23,15 +22,24 @@ logger=logging.basicConfig(level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s')
 log=logging.getLogger(logger)
 
-class Task(BaseModel):
-    task:str
-    status:str="Pending"
+
+# class Task(BaseModel):
+#     task:str
+#     status:str="Pending"
+
+class UserResponse(BaseModel):
+    user_id:int
+    name:str
+    
+class SessionResponse(BaseModel):
+    notes:list[str]=Field(default_factory=list)
+    tasks:list[dict]=Field(default_factory=list)
 
 class Message(BaseModel):
     notes:list[str]=Field(default_factory=list)
-    tasks:list[Task]=Field(default_factory=list)
-    message:list[str]=Field(default_factory=list)
-
+    tasks:list[dict]=Field(default_factory=list)
+    # message:list[str]=Field(default_factory=list)
+    
     class Config:
         from_attributes=True
 
@@ -43,7 +51,7 @@ class Result(BaseModel):
 
 # llm model
 model=GroqModel(
-    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-20b",
     provider=GroqProvider(api_key=api_key))
 
 prompt=f"""
@@ -54,7 +62,7 @@ prompt=f"""
     1. if user ask weather details then you are call get_weathers tool and return all current weather data.
     2. if user ask add notes,you are call save_note tool,respond "Note saved".
     3. if you are showing notes then call show_notes and  Return Only the all final answer with number format.
-    4. if user add multiple task or note then add one by one.
+    4. if user add multiple task or note then add one by one,,respond "Tasks saved".
     5. When the user asks to show tasks, call the view_task tool and return the tool output exactly as received with no extra text and format changes.
     6. If the user asks to complete or update a task, identify the index number and call the complete_task tool.
     7. Do not give extra information.
@@ -65,15 +73,17 @@ prompt=f"""
     12.If the user asks to complete or update a task,convert text number into numeric number.
     13.if user asks to remove or delete notes and tasks,convert text number into numeric number.
     """
+
 agent=Agent(
     model=model,
     deps_type=Message,
+    retries=60,
     system_prompt=prompt
 )
 
 # weather tool
 @agent.tool
-def get_weathers(ctx:RunContext,query:str):
+def get_weathers(ctx:RunContext, query:str):
     """fatched current weather data"""
     try:
 
@@ -81,17 +91,15 @@ def get_weathers(ctx:RunContext,query:str):
         response = requests.get(url)
         data = response.json()
         log.info("Weather fatched!!")
-        return data
+        return f"Current weather is {data}"
     
     except:
         log.error("Weather not fatched!!")
         return "Unable to fatched weather" 
 
- 
-
 #Create Notes  
 @agent.tool
-def save_note(ctx:RunContext[Message],query:str):
+def save_note(ctx:RunContext[Message], query:str):
     """Save the all Notes"""    
     try:
 
@@ -108,8 +116,8 @@ def save_note(ctx:RunContext[Message],query:str):
 def show_notes(ctx:RunContext[Message]):
     """show the Notes"""
     try:
-        # if not ctx.deps.notes:
-        #     return "Notes not found"
+        if not ctx.deps.notes:
+            return "Notes not found"
         log.info("Notes show")
         return "\n".join(f"{i+1}.{n}" for i,n in enumerate(ctx.deps.notes))
     
@@ -119,11 +127,11 @@ def show_notes(ctx:RunContext[Message]):
     
 # Delete Notes   
 @agent.tool
-def remove_notes(ctx:RunContext[Message],index:int):
+def remove_notes(ctx:RunContext[Message], index:int):
     """remove notes by index"""
     try:
-        # if not ctx.deps.notes:
-        #     return "Notes not found"
+        if not ctx.deps.notes:
+            return "Notes not found"
         ctx.deps.notes.pop(index-1)
         log.info("Notes deleted")
         return "Notes deleted"
@@ -138,7 +146,7 @@ def add_task(ctx:RunContext[Message],query:str):
     try:
         task_list=[t.strip() for t in query.split(",")] 
         for t in task_list:
-            ctx.deps.tasks.append(Task(task=t))
+            ctx.deps.tasks.append({"task":t,"status":"Pending"})
         log.info("Task add")
         return "Task added"
     except:
@@ -150,13 +158,13 @@ def add_task(ctx:RunContext[Message],query:str):
 def view_task(ctx:RunContext[Message]):
     """view all tasks"""
     try:
-        # if not ctx.deps.tasks:
-        #     return "Tasks not found"
+        if not ctx.deps.tasks:
+            return "Tasks not found"
         
 
         result=" "
         for i,t in enumerate(ctx.deps.tasks,start=1):
-            result += f"{i}.{t.task} ({t.status})\n"
+            result += f"{i}. {t['task']} ({t['status']})\n"
         
         log.info("Tasks show")
         return result
@@ -166,13 +174,13 @@ def view_task(ctx:RunContext[Message]):
 
 # Update Tasks
 @agent.tool       
-def complete_task(ctx:RunContext[Message],index:int):
+def complete_task(ctx:RunContext[Message], index:int):
     """update the task complete"""
     try:
         if index<1 or index >len(ctx.deps.tasks):
             return "Invalid task index"
         
-        ctx.deps.tasks[index-1].status = "Completed"
+        ctx.deps.tasks[index-1]["status"] = "Completed"
         log.info("task updated")
         return "Task marked as completed."
     except:
