@@ -6,7 +6,13 @@ from pydantic_ai import Agent,RunContext
 from pydantic_ai.models.groq import GroqModel
 from pydantic_ai.providers.groq import GroqProvider
 from pydantic import BaseModel,Field
-# import logfire
+from dataclasses import dataclass
+from models import Notes,Tasks
+from sqlalchemy.orm import Session
+# from models import create_table
+import logfire
+
+# create_table()
 
 load_dotenv()
 
@@ -14,39 +20,17 @@ load_dotenv()
 api_key=os.getenv("Groq_api_key")
 weather_api=os.getenv("weather_api")
 
-# logfire.configure()
-# logfire.instrument_pydantic_ai()
-
+logfire.configure()
+logfire.instrument_pydantic_ai()
 
 logger=logging.basicConfig(level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s')
 log=logging.getLogger(logger)
 
-
-# class Task(BaseModel):
-#     task:str
-#     status:str="Pending"
-
-class UserResponse(BaseModel):
-    user_id:int
-    name:str
-    
-class SessionResponse(BaseModel):
-    notes:list[str]=Field(default_factory=list)
-    tasks:list[dict]=Field(default_factory=list)
-
-class Message(BaseModel):
-    notes:list[str]=Field(default_factory=list)
-    tasks:list[dict]=Field(default_factory=list)
-    # message:list[str]=Field(default_factory=list)
-    
-    class Config:
-        from_attributes=True
-
-class Result(BaseModel):
-    result:str
-
-# memory=Message()
+@dataclass
+class DBResponse:
+    db: Session
+    session_id : int = Field(description="chat session ID")
 
 
 # llm model
@@ -76,14 +60,14 @@ prompt=f"""
 
 agent=Agent(
     model=model,
-    deps_type=Message,
+    deps_type=DBResponse,
     retries=60,
     system_prompt=prompt
 )
 
 # weather tool
-@agent.tool
-def get_weathers(ctx:RunContext, query:str):
+@agent.tool_plain
+def get_weathers(query:str):
     """fatched current weather data"""
     try:
 
@@ -99,13 +83,19 @@ def get_weathers(ctx:RunContext, query:str):
 
 #Create Notes  
 @agent.tool
-def save_note(ctx:RunContext[Message], query:str):
+def save_note(ctx:RunContext[DBResponse], query:str):
     """Save the all Notes"""    
     try:
+        db=ctx.deps.db
+        session_id=ctx.deps.session_id
 
-        note_list=[t.strip() for t in query.split(",")] 
-        ctx.deps.notes.extend(note_list)
+        note_list=[n.strip() for n in query.split(",")] 
+        # ctx.deps.notes.extend(note_list)
+
+        for n in note_list:
+            db.add(Notes(session_id=session_id,notes=n))
         log.info("Notes add")
+        db.commit()
         return "Note saved"
     except:
         log.error("Notes not saved!!")
@@ -113,26 +103,41 @@ def save_note(ctx:RunContext[Message], query:str):
       
 # Show Notes      
 @agent.tool
-def show_notes(ctx:RunContext[Message]):
+def show_notes(ctx:RunContext[DBResponse]):
     """show the Notes"""
     try:
-        if not ctx.deps.notes:
+        db = ctx.deps.db
+        session_id = ctx.deps.session_id
+
+        notes = db.query(Notes).filter_by(session_id=session_id).all()
+
+        if not notes:
             return "Notes not found"
         log.info("Notes show")
-        return "\n".join(f"{i+1}.{n}" for i,n in enumerate(ctx.deps.notes))
-    
+
+        return "\n".join(f"{i+1}. {n.notes}" for i, n in enumerate(notes))
+            
     except:
         log.error("Notes not show")
         return "Notes not found"
     
 # Delete Notes   
 @agent.tool
-def remove_notes(ctx:RunContext[Message], index:int):
+def remove_notes(ctx:RunContext[DBResponse], index:int):
     """remove notes by index"""
     try:
-        if not ctx.deps.notes:
-            return "Notes not found"
-        ctx.deps.notes.pop(index-1)
+        # if not ctx.deps.notes:
+        #     return "Notes not found"
+        db=ctx.deps.db
+        session_id=ctx.deps.session_id
+        delete_notes=db.query(Notes).filter_by(session_id=session_id).all()
+
+        if index<1 or index >len(delete_notes):
+            return "Invalid task index"
+        
+        db.delete(delete_notes[index-1])
+        db.commit()
+        # ctx.deps.notes.pop(index-1)
         log.info("Notes deleted")
         return "Notes deleted"
     except:
@@ -141,12 +146,19 @@ def remove_notes(ctx:RunContext[Message], index:int):
     
 # Create Tasks 
 @agent.tool
-def add_task(ctx:RunContext[Message],query:str):
+def add_task(ctx:RunContext[DBResponse],query:str):
     """add all task"""
     try:
+        db=ctx.deps.db
+        session_id=ctx.deps.session_id
+
         task_list=[t.strip() for t in query.split(",")] 
+        # for t in task_list:
+        #     ctx.deps.tasks.append({"task":t,"status":"Pending"})
         for t in task_list:
-            ctx.deps.tasks.append({"task":t,"status":"Pending"})
+           db.add(Tasks(session_id=session_id,tasks=t,status="Pending"))
+
+        db.commit()
         log.info("Task add")
         return "Task added"
     except:
@@ -155,16 +167,22 @@ def add_task(ctx:RunContext[Message],query:str):
 
 # Show Tasks
 @agent.tool
-def view_task(ctx:RunContext[Message]):
+def view_task(ctx:RunContext[DBResponse]):
     """view all tasks"""
     try:
-        if not ctx.deps.tasks:
+        # if not ctx.deps.tasks:
+        #     return "Tasks not found"
+        
+        db=ctx.deps.db
+        session_id=ctx.deps.session_id
+        tasks=db.query(Tasks).filter_by(session_id=session_id).all()
+
+        if not tasks:
             return "Tasks not found"
         
-
         result=" "
-        for i,t in enumerate(ctx.deps.tasks,start=1):
-            result += f"{i}. {t['task']} ({t['status']})\n"
+        for i,t in enumerate(tasks,start=1):
+            result += f"{i}. {t.tasks} ({t.status})\n"
         
         log.info("Tasks show")
         return result
@@ -174,13 +192,17 @@ def view_task(ctx:RunContext[Message]):
 
 # Update Tasks
 @agent.tool       
-def complete_task(ctx:RunContext[Message], index:int):
+def complete_task(ctx:RunContext[DBResponse], index:int):
     """update the task complete"""
     try:
-        if index<1 or index >len(ctx.deps.tasks):
+        db=ctx.deps.db
+        session_id=ctx.deps.session_id
+        update=db.query(Tasks).filter_by(session_id=session_id).all()
+        if index<1 or index >len(update):
             return "Invalid task index"
         
-        ctx.deps.tasks[index-1]["status"] = "Completed"
+        update[index-1].status = "Completed"
+        db.commit()
         log.info("task updated")
         return "Task marked as completed."
     except:
@@ -189,13 +211,20 @@ def complete_task(ctx:RunContext[Message], index:int):
 
 # Delete Tasks
 @agent.tool
-def remove_task(ctx:RunContext[Message],index:int):
+def remove_task(ctx:RunContext[DBResponse],index:int):
     """remove tasks by index"""
     try:
         # if not ctx.deps.tasks:
         #     return "Tasks not found"
+        db=ctx.deps.db
+        session_id=ctx.deps.session_id
+        delete_tasks=db.query(Tasks).filter_by(session_id=session_id).all()
+        if index<1 or index >len(delete_tasks):
+            return "Invalid task index"
+        db.delete(delete_tasks[index-1])
+        db.commit()
         log.info("Task deleted")
-        ctx.deps.tasks.pop(index-1)
+        # ctx.deps.tasks.pop(index-1)
     except:
         log.error("Tasks not deleted")
         return "Tasks deleted"
@@ -211,4 +240,3 @@ def remove_task(ctx:RunContext[Message],index:int):
 #     except Exception as e:
 #         logging.error("Sorry, I am facing an issue. Please try again.")
 #         raise HTTPException(status_code=500,detail=str(e))
-

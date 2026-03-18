@@ -1,17 +1,12 @@
 from fastapi import FastAPI,HTTPException,Depends
-from utils import agent
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session 
 from database import Sessionlocal
-from models import create_table, User,MessageHistory,Sessions
+from models import create_table, User,MessageHistory,Session as dbsession
 from utils import *
 
 app=FastAPI()
 
 create_table()
-
-notes=[]
-tasks=[]
-message=[]
 
 @app.get("/")
 def msg():
@@ -36,81 +31,60 @@ async def create_user(name:str,db:Session=Depends(get_db)):
     
     except Exception as e:
         log.error("user not created")
-        raise HTTPException (status_code=500,detail=str(e))
-        
+        raise HTTPException(status_code=500,detail=str(e))
+    
 @app.post("/session/")
-async def get_session(user_id:int,query:str,db:Session=Depends(get_db)):
+async def get_session(user_id:int,db:Session=Depends(get_db)):
     try:
-        user=db.query(User).filter(User.user_id==user_id).first()
-        session_data=Sessions(notes=notes,tasks=tasks,user_id=user.user_id)
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        session_data=dbsession(user_id=user_id)
         db.add(session_data)
         db.commit()
         db.refresh(session_data)
-
-        response = await agent.run(query,output_type=Result,message_history=SessionResponse)
-        print("response_agent",response)
-
-        # chat=MessageHistory(notes=data.notes,task=data.tasks,sessionid=Sessions.session_id)
-        # db.add(chat)
-        # db.commit()
-        # db.refresh()
-
-            
+        return session_data
+        
     except Exception as e:
         print("error_",e)
         log.error("session not created")
         raise HTTPException(status_code=500,detail=f"error in get_session {e}")
-
-@app.post("/sessions/")
-async def get_query(name:str,query:str,db:Session=Depends(get_db)):
+  
+@app.post("/chat/")
+async def get_message(session_id:int,query:str,db:Session=Depends(get_db)):
     try:
-        data = db.query(User).filter(User.name == name).first() 
-        print("result",data)
-
-        if not data:
-            data=User(name=name,notes=notes,tasks=tasks,message=message)
-            print("data__",data)
-            db.add(data)
-            db.commit()
-            db.refresh(data)
-
+       
         
-        memory=Message(
-            notes=data.notes,
-            tasks=data.tasks,
-            message=data.message
+        session = db.query(dbsession).filter(dbsession.id == session_id).first()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        history = db.query(MessageHistory).filter_by(session_id=session_id).all()
+
+        message_history = []
+        for h in history:
+            message_history.append(h.message)
+
+        deps = DBResponse(db, session_id= session_id)
+
+        response =await agent.run(
+            query,
+            deps=deps,
+            message_history=message_history   
         )
 
-        print("memory",memory)
-        
-        memory.message.append(query)
+        chat = MessageHistory(
+            session_id=session_id,
+            message=response.output
+        )
 
-
-
-        response = await agent.run(query,deps=memory,output_type=Result)
-        print("response_agent",response)
-        
-        #update data
-        data.notes=memory.notes
-        data.tasks=memory.tasks
-        data.message=memory.message
+        db.add(chat)
         db.commit()
 
-        # memory.message.append(response.output)
-        return response.output
-     
+        return {"result":response.output}
+
     except Exception as e:
         print("error_",e)
-        raise HTTPException(status_code=500,detail=f"error in create_session {e}")
-    
-    
-@app.get("/get_result/")
-def get_result(user_id:int,db:Session=Depends(get_db)):
-    try:
-
-        result = db.query(User).filter(User.user_id == user_id).first() 
-        return {"user_id":result.user_id,"name":result.name,"notes":result.notes,"tasks":result.tasks}
-    
-    except Exception as e:
-        raise HTTPException(status_code=500,detail=str(e))
-    
+        log.error("session not created")
+        raise HTTPException(status_code=500,detail=f"error in get_session {e}")
