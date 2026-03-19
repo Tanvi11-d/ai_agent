@@ -31,6 +31,7 @@ class MessageHistory(Base):
 
     id:Mapped[int]=mapped_column(Integer,primary_key=True)
     message:Mapped[str]=mapped_column(String)
+    query:Mapped[str]=mapped_column(String)
     session_id:Mapped[int]=mapped_column(ForeignKey('sessions.id'))
     sessions_ref:Mapped[MutableList['Session']]=relationship('Session',back_populates="message_ref")
 
