@@ -1,5 +1,5 @@
 .logfire/
-.vscode/
 agents/
-.env
 __pycache__/
+config.bat
+node_modules
